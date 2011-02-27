@@ -3,8 +3,13 @@ namespace lfo;
 
 class RecordNotFoundException extends \Exception {}
 class UnknownSerializationFormat extends \Exception {}
+class UnknownIndexException extends \Exception {}
 class QueryFailedException extends \Exception {}
 class RollbackException extends \Exception {}
+
+if (function_exists('lfo_configure')) {
+    \lfo_configure();
+}
 
 class Gateway
 {
@@ -85,56 +90,21 @@ class Gateway
         }
     }
     
-    private static $index_type_map = array(
-        'date'              => 'date',
-        'datetime'          => 'date_time',
-        
-        'tinyint'           => 'boolean',
-        
-        'smallint'          => 'integer',
-        'mediumint'         => 'integer',
-        'int'               => 'integer',
-        'bigint'            => 'integer',
-        
-        'float'             => 'float',
-        'double'            => 'float',
-        'decimal'           => 'float',
-        
-        'char'              => 'string',
-        'varchar'           => 'string',
-        'tinytext'          => 'string',
-        'text'              => 'string',
-        'mediumtext'        => 'string',
-        'longtext'          => 'string'
-    );
-    
-    public function load_indexes() {
-        $this->indexes = array();
-        $res = mysql_query("DESCRIBE " . $this->table_name);
-        while ($row = mysql_fetch_assoc($res)) {
-            $field = $row['Field'];
-            $type = strtolower($row['Type']);
-            if ($field == 'id' || ($field[0] == '_' && $field[1] == '_')) {
-                continue;
+    public function transaction($lambda) {
+        try {
+            $this->x('BEGIN');
+            if ($lambda() === false) {
+                throw new RollbackException;
+            } else {
+                $this->x('COMMIT');
+                return true;
             }
-            if (($p = strpos($type, '(')) > 0) {
-                $type = substr($type, 0, $p);
-            }
-            if (isset(self::$index_type_map[$type])) {
-                $this->indexes[$field] = array('type' => self::$index_type_map[$type]);
-            }
-        }
-    }
-    
-    public function open($id) {
-        $id     = (int) $id;
-        $sql    = "SELECT * FROM {$this->table_name} WHERE id = " . $id;
-        $row    = mysql_fetch_assoc($this->query($sql));
-        
-        if ($row) {
-            return $this->unserialize($row);
-        } else {
-            throw new RecordNotFoundException("couldn't find a row with ID = $id");
+        } catch (RollbackException $re) {
+            $this->x('ROLLBACK');
+            return false;
+        } catch (\Exception $e) {
+            $this->x('ROLLBACK');
+            throw $e;
         }
     }
     
@@ -144,27 +114,32 @@ class Gateway
         
         $class = $row['__object_class'];
         $instance = new $class;
-        $instance->lfo_hydrate($id, $data);
+        $instance->lfo_hydrate($row['id'], $data);
         
         return $instance;
     }
     
-    public function transaction($lambda) {
-        try {
-            $this->exec('BEGIN');
-            if ($lambda() === false) {
-                throw new RollbackException;
-            } else {
-                $this->exec('COMMIT');
-                return true;
-            }
-        } catch (RollbackException $re) {
-            $this->exec('ROLLBACK');
-            return false;
-        } catch (\Exception $e) {
-            $this->exec('ROLLBACK');
-            throw $e;
+    public function open($id, $class = null) {
+        $id = (int) $id;
+        
+        $sql = "SELECT * FROM {$this->table_name} WHERE id = " . $id;
+        if ($class) {
+            $sql .= " AND __object_class = " . $this->quote_string(ltrim($class, '\\'));
         }
+        
+        if ($row = mysql_fetch_assoc($this->q($sql))) {
+            return $this->unserialize($row);
+        } else {
+            throw new RecordNotFoundException("couldn't find a row with ID = $id");
+        }
+    }
+    
+    public function query() {
+        $q = new Query($this);
+        if (func_num_args() > 0) {
+            call_user_func_array(array($q, 'of'), func_get_args());
+        }
+        return $q;
     }
     
     public function create($object) {
@@ -176,7 +151,7 @@ class Gateway
             VALUES
                 (" . implode(', ', array_values($insert)) . ")";
         
-        $this->exec($sql);
+        $this->x($sql);
         return mysql_insert_id();
     }
     
@@ -189,18 +164,22 @@ class Gateway
         $sql  = "UPDATE {$this->table_name} SET " . implode(', ', $sets);
         $sql .= " WHERE id = " . (int) $object->get_id();
         
-        return $this->exec($sql) > 0;
+        return $this->x($sql) > 0;
     }
     
-    public function delete($object) {
-        return $this->exec("DELETE FROM {$this->table_name} WHERE id = " . (int) $object->get_id()) > 0;
+    public function delete($id) {
+        if (is_object($id)) $id = $id->get_id();
+        return $this->x("DELETE FROM {$this->table_name} WHERE id = " . (int) $id) > 0;
     }
     
-    //
-    //
-    // End Public Interface
+    public function quote_index_value($index, $value) {
+        if (!isset($this->indexes[$index])) {
+            throw new UnknownIndexException;
+        }
+        return $this->{"quote_{$this->indexes[$index]['type']}"}($value);
+    }
     
-    private function quote_boolean($v) {
+    public function quote_boolean($v) {
         return $v === null ? 'NULL' : ($v ? '1' : '0');
     }
     
@@ -218,11 +197,11 @@ class Gateway
         return $this->quote_string($v->iso_date_time());
     }
     
-    private function quote_integer($v) {
+    public function quote_integer($v) {
         return $v === null ? 'NULL' : (int) $v;
     }
     
-    private function quote_float($v) {
+    public function quote_float($v) {
         if ($v === null) return 'NULL';
         if (is_string($v) && preg_match('/^-?\d+(\.\d+)?$/', $v)) {
             return $v;
@@ -231,18 +210,22 @@ class Gateway
         }
     }
     
-    private function quote_string($v) {
+    public function quote_string($v) {
         return $v === null ? 'NULL' : ('\'' . mysql_real_escape_string($v, $this->mysql_link) . '\'');
     }
     
-    private function query($sql) {
+    //
+    //
+    // End Public Interface
+    
+    private function q($sql) {
         if (!($res = mysql_query($sql, $this->mysql_link))) {
             throw new QueryFailedException;
         }
         return $res;
     }
     
-    private function exec($sql) {
+    private function x($sql) {
         if (!mysql_query($sql, $this->mysql_link)) {
             throw new QueryFailedException;
         }
@@ -277,209 +260,238 @@ class Gateway
         
         return $fields;
     }
-}
-
-class Object
-{
-    public function __get($k) {
-        if ($k === 'lfo') {
-            $klass = get_called_class();
-            $this->lfo = $klass::lfo_instance();
-            return $this->lfo;
+    
+    private static $index_type_map = array(
+        'date'              => 'date',
+        'datetime'          => 'date_time',
+        
+        'tinyint'           => 'boolean',
+        
+        'smallint'          => 'integer',
+        'mediumint'         => 'integer',
+        'int'               => 'integer',
+        'bigint'            => 'integer',
+        
+        'float'             => 'float',
+        'double'            => 'float',
+        'decimal'           => 'float',
+        
+        'char'              => 'string',
+        'varchar'           => 'string',
+        'tinytext'          => 'string',
+        'text'              => 'string',
+        'mediumtext'        => 'string',
+        'longtext'          => 'string'
+    );
+    
+    private function load_indexes() {
+        $this->indexes = array();
+        $res = mysql_query("DESCRIBE " . $this->table_name);
+        while ($row = mysql_fetch_assoc($res)) {
+            $field = $row['Field'];
+            $type = strtolower($row['Type']);
+            if ($field == 'id' || ($field[0] == '_' && $field[1] == '_')) {
+                continue;
+            }
+            if (($p = strpos($type, '(')) > 0) {
+                $type = substr($type, 0, $p);
+            }
+            if (isset(self::$index_type_map[$type])) {
+                $this->indexes[$field] = array('type' => self::$index_type_map[$type]);
+            }
         }
     }
+}
+
+class Query implements \IteratorAggregate
+{
+    private $gateway        = null;
+    private $classes        = array();
+    private $conditions     = array();
+    private $order          = array();
     
-    public static function lfo_instance() {
-        return \lfo\Gateway::instance(static::lfo_instance_id());
+    public function __construct($gateway) {
+        $this->gateway = $gateway;
     }
     
-    public static function lfo_instance_id() {
-        return null;
+    public function of($classes) {
+        foreach (func_get_args() as $classes) {
+            foreach ((array) $classes as $class) {
+                $this->classes[] = $class;
+            }
+        }
+        return $this;
     }
     
     /**
-     * Override in subclasses to use a different serialization format
+     * Adds a condition to this query. Remember, you can only search on indexes.
+     * Advantage of 2/3 arg variants is that they perform quoting based on known
+     * index column type.
+     *
+     * All conditions added via where() will be ANDed together in final query.
+     *
+     * 1 arg: "username" - finds objects where username is present (i.e. NOT NULL)
+     * 1 arg: "username = 'Jason'" - SQL literal
+     * 2 args: "username", "Jason", generates "username = 'Jason'"
+     * 3 args: "username", "<>", "Jason", generates "username <> 'Jason'"
      */
-    public static function lfo_serialize_as() {
-        return 'php';
-    }
-    
-    private $id             = null;
-    private $created_at     = null;
-    private $updated_at     = null;
-    
-    public function get_id() { return $this->id; }
-    protected function set_id($id) { $this->id = $id === null ? null : (int) $id; }
-    
-    public function get_created_at() { return $this->created_at; }
-    protected function set_created_at($ca) { $this->created_at = $ca; }
-    
-    public function get_updated_at() { return $this->updated_at; }
-    protected function set_updated_at($ua) { $this->updated_at = $ua; }
-    
-    public function is_saved() { return $this->id !== null; }
-    public function is_new_record() { return $this->id === null; }
-    
-    public function is_valid() {
-        $this->validate_prepare();
-        $this->before_validate();
-        if ($this->is_new_record()) {
-            $this->before_validate_on_create();
-        } else {
-            $this->before_validate_on_update();
-        }
-        return $this->perform_validate();
-    }
-    
-    public function save() {
-        if (!$this->is_valid()) {
-            return false;
-        }
-        
-        $self = $this;
-        $id_before = $this->id;
-        $created_at_before = $this->created_at;
-        $updated_at_before = $this->updated_at;
-        
-        $success = $this->lfo->transaction(function() use ($self) {
-            if ($self->send('invoke_callbacks', 'before_save') === false) {
-                return false;
-            }
-            
-            if ($self->is_new_record()) {
-                $now = new \Date_Time;
-                $self->send('set_created_at', $now);
-                $self->send('set_updated_at', $now);
-                if ($self->send('invoke_callbacks', 'before_save_on_create') === false) {
-                    return false;
-                }
-                $self->send('set_id', $self->lfo->create($self));
-                if ($self->send('invoke_callbacks', 'after_save_on_create') === false) {
-                    return false;
-                }
+    public function where($field, $operator = null, $value = null) {
+        $gateway = $this->gateawy;
+        if ($operator === null) {
+            if (preg_match('/^\w+$/', $field)) {
+                $this->conditions[] = "$field IS NOT NULL";
             } else {
-                $self->send('set_updated_at', new \Date_Time);
-                if ($self->send('invoke_callbacks', 'before_save_on_update') === false) {
-                    return false;
-                }
-                $self->lfo->update($self);
-                if ($self->send('invoke_callbacks', 'after_save_on_update') === false) {
-                    return false;
-                }
+                $this->conditions[] = $field;
             }
-            
-            if ($self->send('invoke_callbacks', 'after_save') === false) {
-                return false;
+        } elseif ($value === null) {
+            if (is_array($operator)) {
+                $this->conditions[] = "$field IN (" . implode(', ', array_map($operator, function($v) use ($field, $gateway) {
+                    $gateway->quote_index_value($field, $v);
+                })) . ')';
+            } else {
+                $this->conditions[] = "$field = " . $gateway->quote_index_value($field, $operator);
             }
-            
-            return true;
-        });
+        } else {
+            $this->conditions[] = "$field $operator " . $gateway->quote_index_value($field, $value);
+        }
+        return $this;
+    }
+    
+    public function order($field, $direction = 'ASC') {
+        $this->order[] = $field . ' ' . strtoupper($direction);
+        return $this;
+    }
+    
+    public function to_sql() {
+        $sql        = "SELECT * FROM {$this->gateway->table_name}";
+        $gateway    = $this->gateway;
+        $conditions = $this->conditions;
         
-        if (!$success) {
-            $this->id = $id_before;
-            $this->created_at = $created_at_before;
-            $this->updated_at = $updated_at_before;
+        if (count($this->classes)) {
+            $conditions[] = '(' . implode(' OR ', array_map($this->classes, function($c) use ($gateway) {
+                return "__object_class = " . $gateway->quote_string($c);
+            })) . ')';
         }
         
-        return $success;
+        if (count($conditions)) {
+            $sql .= ' WHERE ' . implode(' AND ', $this->conditions);
+        }
+        
+        if (count($this->order)) {
+            $sql .= ' ORDER BY ' . implode(', ', $this->order);
+        }
+        
+        return $sql;
     }
     
-    public function delete() {
-        $self = $this;
-        return $this->lfo->transaction(function() use ($self) {
-            if ($self->send('invoke_callbacks', 'before_delete') === false) {
-                return false;
-            }
-            if ($self->lfo->delete($this) === false) {
-                return false;
-            }
-            if ($self->send('invoke_callbacks', 'after_delete') === false) {
-                return false;
-            }
-            return true;
-        });
-    }
-    
-    public function send() {
-        $args = func_get_args();
-        $method = array_shift($args);
-        return call_user_func_array(array($this, $method), $args);
-    }
-    
-    //
-    // Validation
-    
-    protected function validate_prepare() {}
-    protected function perform_validate() {
-        return true;
-    }
-    
-    //
-    // Hooks
-    
-    protected function invoke_callbacks($chain) {
-        return $this->$chain();
-    }
-    
-    protected function before_validate() {}
-    protected function before_validate_on_create() {}
-    protected function before_validate_on_update() {}
-
-    protected function before_save() {}
-    protected function before_save_on_create() {}
-    protected function before_save_on_update() {}
-    
-    protected function after_save() {}
-    protected function after_save_on_create() {}
-    protected function after_save_on_update() {}
-    
-    protected function before_delete() {}
-    protected function after_delete() {}
-    
-}
-
-class ArrayObject extends Object
-{
-    protected $attributes = array();
-    
-    public function lfo_serialization_data() {
-        return array(
-            'attributes'        => $this->attributes,
-            'created_at'        => $this->get_created_at(),
-            'updated_at'        => $this->get_updated_at()
-        );
-    }
-    
-    public function lfo_hydrate($id, $data) {
-        $this->set_id($id);
-        $this->set_created_at($data['created_at']);
-        $this->set_updated_at($data['updated_at']);
-        $this->attributes = $data['attributes'];
+    public function getIterator() {
+        if (!($res = mysql_query($this->to_sql(), $this->gateway->mysql_link))) {
+            throw new QueryFailedException;
+        }
+        return new Result($this->gateway, $res);
     }
 }
 
-class OpenArrayObject extends ArrayObject
+class Result implements \Iterator, \Countable
 {
-    public function __call($method, $args) {
-        if (preg_match('/^(get|set|is)_(\w+)/', $method, $m)) {
-            if ($method[0] == 'g') {
-                return $this->read_attribute($m[2]);
-            } elseif ($method[0] == 's') {
-                return $this->write_attribute($m[2], $args[0]);
-            } elseif ($method[0] == 'i') {
-                return (bool) $this->read_attribute($m[2]);
-            }
+    private $gateway;
+    private $result;
+    
+    private $paginating         = false;
+    private $page               = null;
+    private $rpp                = null;
+    
+    public function __construct($gateway, $result) {
+        $this->gateway = $gateway;
+        $this->result = $result;
+    }
+    
+    public function row_count() { return mysql_num_rows($this->result); }
+    public function value($offset = 0) { return mysql_result($this->result, 0, $offset); }
+    public function seek($offset) { mysql_data_seek($this->result, $offset); }
+    public function free() { mysql_free_result($this->result); }
+    
+    public function paginate($rpp, $page = 1) {
+        $this->paginating   = true;
+        $this->rpp          = (int) $rpp;
+        $this->page         = (int) $page;
+        return $this;
+    }
+    
+    public function page_count() {
+        if ($this->paginating) {
+            return ceil($this->row_count() / $this->rpp);
+        } else {
+            return $this->row_count() ? 1 : 0;
         }
     }
     
-    public function read_attribute($key, $default = null) {
-        return isset($this->attributes[$key])
-            ? $this->attributes[$key]
-            : $default;
+    public function page() { return $this->paginating ? $this->page : 1; }
+    public function rpp() { return $this->rpp; }
+    
+    public function first_row() { return mysql_fetch_assoc($this->result); }
+    public function first_object() { return $this->gateway->unserialize($this->first_row()); }
+    
+    public function stack() {
+        $out = array();
+        foreach ($this as $v) $out[] = $v;
+        return $out;
     }
     
-    public function write_attribute($key, $value) {
-        $this->attributes[$key] = $value;
+    //
+    // Iterator implementation
+
+    private $index              = -1;
+    private $limit              = null;
+    private $current_row;
+    private $current_row_memo   = null;
+
+    public function rewind() {
+
+        if ($this->paginating) {
+            $start_index = ($this->page - 1) * $this->rpp;
+            $this->limit = $this->rpp;
+        } else {
+            $start_index = 0;
+            $this->limit = null;
+        }
+
+        if ($this->index == -1) {
+            if ($start_index != 0) {
+                $this->seek($start_index);
+                $this->index = $start_index - 1;
+            }
+            $this->next();
+        } elseif ($this->index == $start_index) {
+            // Do nothing; iterator is in rewound state
+        } else {
+            $this->seek($start_index);
+            $this->index = $start_index - 1;
+            $this->next();
+        }
+
+    }
+
+    public function current() {
+        if (!$this->current_row_memo) {
+            $this->current_row_memo = $this->gateway->unserialize($this->current_row);
+        }
+        return $this->current_row_memo;
+    }
+    
+    public function key() { return $this->index; }
+    public function valid() { return $this->current_row !== false; }
+    public function count() { return $this->row_count(); }
+
+    public function next() {
+        if ($this->limit === 0) {
+            $this->current_row = false;
+        } else {
+            $this->current_row = mysql_fetch_assoc($this->result);
+            if ($this->limit !== null) $this->limit--;
+        }
+        $this->current_row_memo = null;
+        $this->index++;
     }
 }
 
