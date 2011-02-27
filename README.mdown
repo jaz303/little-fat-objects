@@ -1,0 +1,241 @@
+LFO / little-fat-objects
+========================
+
+&copy; 2010 Jason Frame [ [jason@onehackoranother.com](mailto:jason@onehackoranother.com) / [@jaz303](http://twitter.com/jaz303) ]  
+Released under the MIT License.
+
+A schema-free, indexed object model for PHP 5.3/MySQL.
+
+Overview
+--------
+
+LFO is a "schema-free, indexed object model for PHP 5.3/MySQL.". Let's look what this means exactly:
+
+  * "schema-free" - there's no need to define tables/fields for each distinct model being persisted.
+    Everything is serialized to a single MySQL table/field.
+  * "indexed" - however, you can define as many extra fields as you wish for performant searching
+    and sorting. Each of these fields is called an index.
+  * "object model" - LFO exposes the above functionality through an object interface. Just implement
+    a handful of methods to make a class persistable with LFO.
+    
+LFO also includes a powerful, serialization-friendly date/time implementation (see `src/datetime.php`)
+and an [Active-Record](http://en.wikipedia.org/wiki/Active_record_pattern)-style base class as a
+starting point for implementing your own models.
+    
+Installation
+------------
+
+  * Import `lfo.sql` into your database. You may rename the table from `object` to whatever you wish.
+  * Copy the contents of the `src` directory into your PHP `include_path`, or wherever required
+    by your framework/environment.
+  * Configure autoloader or require the LFO libraries in your application as necessary.
+    
+Configuring
+-----------
+
+Use of LFO starts by configuring the _gateway_. A gateway is simply an object that holds a
+reference to the database connection, some configuration, and provides "low level" persistence
+operations upon which more useful architectures (such as active record) can be constructed.
+
+The main things to be configured are the database credentials:
+
+    \lfo\Gateway::configure(function($g) {
+        $g->mysql_hostname = '127.0.0.1';
+        $g->mysql_username = 'root';
+        $g->mysql_password = '';
+        $g->mysql_database = 'lfo_test';
+    });
+    
+Alternately, if you already have a MySQL connection created by `mysql_connect()`
+it can be assigned directly:
+
+    \lfo\Gateway::configure(function($g) use ($existing_link) {
+        $g->mysql_link = $existing_link;
+    });
+    
+Other configuration options:
+
+    \lfo\Gateway::configure(function($g) use ($existing_link) {
+        
+        // Table to use for persisted objects
+        $g->table_name = 'some_table';
+        
+        // If true, all datetime values will be converted to UTC before
+        // being inserted into the database (true by default, recommended)
+        $g->use_utc = true;
+        
+    });
+
+__Advanced tip:__ when first `require()`'d, LFO will call the global function `lfo_configure` if it
+exists. This feature can be used in lazy-loading environments to assign pre-existing database
+connections or load cached index information.
+
+Creating an LFO Compliant Model
+-------------------------------
+
+You only need to implement four methods to make a model persistable with LFO:
+
+  * `get_id()` - must return the unique ID for this object if it has already been persisted
+    into the database, null otherwise.
+  * `lfo_serialize_as()` - returns the serialization format. For now, only native PHP serialization
+    is supported so you should always return `'php'`.
+  * `lfo_serialization_data()` - returns the object structure to be serialized, e.g. an array of
+    attribute values.
+  * `lfo_hydrate($id, $data)` - called during unserialization; `$id` is the unique ID of the
+    object being unserialized and `$data` is the same data that was returned from
+    `lfo_serialization_data()` when the object was last saved. This method should restore
+    your object to its "live state".
+    
+For concrete examples of LFO models please refer to the classes defined in `src/lfo_object.php`.
+
+Persisting Data
+---------------
+
+LFO's API for loading/saving/deleting is simple. First, grab a reference to the gateway:
+
+    $gateway = lfo\Gateway::instance();
+    
+To load an object from the database, call `open()` with the object's ID. This will return
+the unserialized object on success or throw an `lfo\RecordNotFoundException` on failure:
+
+    $object = $gateway->open(12);
+    
+You can ensure that the loaded object is of a specific class by passing the fully-qualified
+class name as a second parameter. This is a strict check; for now, subclasses will not match.
+
+    $object = $gateway->open(12, 'Person');
+    
+To write a new object to the database, pass it to the gateway's `create()` method. This method
+will return the new object's ID on success and throw an `lfo\QueryFailedException` on failure:
+
+    $object_id = $gateway->create($my_object_instance);
+    
+To update an existing object in the database, pass it to the gateway's `update()` method. As with
+`create()`, `lfo\QueryFailedException` is thrown on failure:
+
+    $gateway->update($my_object_instance);
+    
+Delete an object by calling `delete()` on the gateway, passing in either an object instance or
+object ID:
+
+    // These are equivalent
+    $gateway->delete($object);
+    $gateway->delete($object->get_id());
+
+Querying Data
+-------------
+
+A chainable interface is provided for concise querying. Begin a query by calling `query()` on
+the gateway:
+
+    $query = $gateway->query(); // query all object classes
+    $query = $gateway->query("Order", "Invoice"); // query named classes only
+    
+The query can be restricted to specific classes of object by calling `of()`:
+
+    // Include objects of type "Person"
+    $query->of("Person");
+    
+And use one of the various forms of `where()` to perform a search on indexes:
+
+    // (1) check for existence of index; full_name IS NOT NULL
+    $query->where("full_name");
+    
+    // (2) supply SQL fragment manually
+    $query->where("full_name = 'Jason Frame'");
+    
+    // (3) index name/value
+    $query->where("full_name", "Jason Frame");
+    
+    // (4) index name/array (generates IN clause)
+    $query->where("age", array(21, 22, 23));
+    
+    // (5) index name, operator, value
+    $query->where("full_name", "<>", "Captain Crunch");
+    
+Form (2) is discouraged as it doesn't take advantage of LFO's automatic data escaping. All other
+forms escape input automatically based on index type.
+    
+Finally, use `order()` to specify sort order:
+
+    // ascending
+    $query->order("full_name");
+    $query->order("full_name", "asc");
+    
+    // descending
+    $query->order("full_name", "desc");
+    
+Here's a more complete example:
+
+    $query = $gateway->query("Order", "Invoice")
+                     ->where("created_at", "<", new \Date(2011, 12, 1))
+                     ->where("customer_id", 123)
+                     ->order("id", "desc");
+    
+Once the query is constructed, use `foreach()` to iterate over the result set immediately, or
+call `exec()` to return a result object. Result objects support the following methods:
+
+    // Returns the total number of rows/objects in the result set
+    $res->row_count();
+
+    // Return first row as an array of fields
+    $res->first_row();
+    
+    // Return first row as an unserialized object
+    $res->first_object();
+    
+    // Paginate result set to 10 items per page, starting at page 2)
+    // Pagination will restrict the the objects returned by `stack()` and `foreach()`
+    $res->paginate(10, 2);
+    
+    // Returns the number of pages in the result set
+    $res->page_count();
+    
+    // Returns all unserialzied result objects in an array
+    $res->stack();
+    
+    // Iterate over each object in result set.
+    // If paginating, will return only those objects in selected page.
+    foreach ($res as $object) {
+        // do stuff
+    }
+    
+Indexes
+-------
+
+Any extra fields defined on the LFO object table are _indexes_. Indexes are important because they
+are the only values which can be efficiently searched/sorted on at the SQL level. When writing an
+object to the database, LFO will look for getter methods for each known index and store the returned
+value if it exists. For example, if the field `full_name` was added to the object table, any object
+implementing the method `get_full_name()` would have its value stored in the index. LFO is type-aware
+and will perform all necessary escaping automatically.
+
+Indexes are useful alongside LFO's single-table philosophy because they allow you to retrieve an
+object and all of its sub-objects with a single query. Let's say you've got an e-commerce system
+wherein `Orders` have associated `Lines`, `Invoices` and `Notes`. If each of these classes implements
+a `get_order_id()` method, all objects relating to an order can be retrieved with a single
+query on the `order_id` index.
+
+lfo\Object and friends - an Active-Record style interface to LFO
+----------------------------------------------------------------
+
+Three base classes are provided as a starting point for your own models:
+
+  * `lfo\Object`: Rails-inspired Active-Record base class implementation with lifecycle
+    callbacks (e.g. before/after save/delete), validation hooks, create/update timestamps,
+    static querying methods.
+  * `lfo\ArrayObject`: extends `lfo\Object` with an attribute array that is persisted along
+    with object creation/update timestamps. Individual attribute accessor methods must be
+    written manually.
+  * `lfo\OpenArrayObject`: extends `lfo\ArrayObject` to allow arbitrary attributes to be
+    set/get using magic methods. E.g. call `set_foo()` to write value for attribute `foo`,
+    and `get_foo()` to read it back.
+    
+More documentation required on these, I know!
+
+Roadmap/TODO
+------------
+
+  * Index sets - store discrete sets of indexes in auxiliary tables and perform JOINs as necessary
+  * Query object should OR together multiple conditions for same index (?)
+  * Object versioning
