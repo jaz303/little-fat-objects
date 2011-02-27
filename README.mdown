@@ -1,7 +1,7 @@
 LFO / little-fat-objects
 ========================
 
-&copy; 2010 Jason Frame [ [jason@onehackoranother.com](mailto:jason@onehackoranother.com) / [@jaz303](http://twitter.com/jaz303) ]  
+&copy; 2011 Jason Frame [ [jason@onehackoranother.com](mailto:jason@onehackoranother.com) / [@jaz303](http://twitter.com/jaz303) ]  
 Released under the MIT License.
 
 A schema-free, indexed object model for PHP 5.3/MySQL.
