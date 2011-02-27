@@ -389,11 +389,15 @@ class Query implements \IteratorAggregate
         return $sql;
     }
     
-    public function getIterator() {
+    public function exec() {
         if (!($res = mysql_query($this->to_sql(), $this->gateway->mysql_link))) {
             throw new QueryFailedException;
         }
         return new Result($this->gateway, $res);
+    }
+    
+    public function getIterator() {
+        return $this->exec();
     }
 }
 
@@ -434,8 +438,22 @@ class Result implements \Iterator, \Countable
     public function page() { return $this->paginating ? $this->page : 1; }
     public function rpp() { return $this->rpp; }
     
-    public function first_row() { return mysql_fetch_assoc($this->result); }
-    public function first_object() { return $this->gateway->unserialize($this->first_row()); }
+    private $first_row_memo     = null;
+    private $first_object_memo  = null;
+    
+    public function first_row() {
+        if ($this->first_row_memo === null) {
+            $this->first_row_memo = mysql_fetch_assoc($this->result);
+        }
+        return $this->first_row_memo;
+    }
+    
+    public function first_object() {
+        if ($this->first_object_memo === null) {
+            $this->first_object_memo = $this->gateway->unserialize($this->first_row());
+        }
+        return $this->first_object_memo;
+    }
     
     public function stack() {
         $out = array();

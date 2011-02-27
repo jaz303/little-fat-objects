@@ -74,9 +74,15 @@ class QueryTest extends LFOTest
         ensure($this->q->getIterator() instanceof \lfo\Result);
     }
     
-    private function assert_sql($sql = '') {
+    public function test_calling_query_on_gateway_with_class_propagates_to_query() {
+        $query = $this->gateway->query('Foo', 'Bar');
+        $this->assert_sql("WHERE __object_class IN ('Foo', 'Bar')", $query);
+    }
+    
+    private function assert_sql($sql = '', $query = null) {
+        if ($query === null) $query = $this->q;
         $sql = "SELECT * FROM " . LFO_TABLE_NAME . ($sql ? " {$sql}" : '');
-        assert_equal($sql, $this->q->to_sql());
+        assert_equal($sql, $query->to_sql());
     }
 }
 ?>

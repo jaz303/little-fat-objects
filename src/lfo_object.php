@@ -222,6 +222,7 @@ class OpenArrayObject extends ArrayObject
     
     public function write_attribute($key, $value) {
         $this->attributes[$key] = $value;
+        return $value;
     }
 }
 ?>
