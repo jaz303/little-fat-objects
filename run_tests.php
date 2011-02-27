@@ -9,13 +9,14 @@ require 'src/lfo_object.php';
 // Configurable bits of stuff
 
 define('LFO_TABLE_NAME', 'lfo_object');
-date_default_timezone_set('Europe/London');
 $link = mysql_connect('127.0.0.1', 'root', '') or die("Could not connect to MySQL\n");
 mysql_select_db('lfo') or die("Could not select database\n");
 
 //
 //
 //
+
+date_default_timezone_set('UTC');
 
 mysql_query("DROP TABLE IF EXISTS lfo_object");
 mysql_query("

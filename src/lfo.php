@@ -173,6 +173,9 @@ class Gateway
     }
     
     public function quote_index_value($index, $value) {
+        if ($index == 'id') {
+            return (int) $value;
+        }
         if (!isset($this->indexes[$index])) {
             throw new UnknownIndexException;
         }
@@ -336,7 +339,7 @@ class Query implements \IteratorAggregate
      * 3 args: "username", "<>", "Jason", generates "username <> 'Jason'"
      */
     public function where($field, $operator = null, $value = null) {
-        $gateway = $this->gateawy;
+        $gateway = $this->gateway;
         if ($operator === null) {
             if (preg_match('/^\w+$/', $field)) {
                 $this->conditions[] = "$field IS NOT NULL";
@@ -345,9 +348,9 @@ class Query implements \IteratorAggregate
             }
         } elseif ($value === null) {
             if (is_array($operator)) {
-                $this->conditions[] = "$field IN (" . implode(', ', array_map($operator, function($v) use ($field, $gateway) {
-                    $gateway->quote_index_value($field, $v);
-                })) . ')';
+                $this->conditions[] = "$field IN (" . implode(', ', array_map(function($v) use ($field, $gateway) {
+                    return $gateway->quote_index_value($field, $v);
+                }, $operator)) . ')';
             } else {
                 $this->conditions[] = "$field = " . $gateway->quote_index_value($field, $operator);
             }
@@ -367,14 +370,16 @@ class Query implements \IteratorAggregate
         $gateway    = $this->gateway;
         $conditions = $this->conditions;
         
-        if (count($this->classes)) {
-            $conditions[] = '(' . implode(' OR ', array_map($this->classes, function($c) use ($gateway) {
-                return "__object_class = " . $gateway->quote_string($c);
-            })) . ')';
+        if (count($this->classes) == 1) {
+            $conditions[] = '__object_class = ' . $gateway->quote_string($this->classes[0]);
+        } elseif (count($this->classes) > 1) {
+            $conditions[] = '__object_class IN (' . implode(', ', array_map(function($c) use ($gateway) {
+                return $gateway->quote_string($c);
+            }, $this->classes)) . ')';
         }
         
         if (count($conditions)) {
-            $sql .= ' WHERE ' . implode(' AND ', $this->conditions);
+            $sql .= ' WHERE ' . implode(' AND ', $conditions);
         }
         
         if (count($this->order)) {
