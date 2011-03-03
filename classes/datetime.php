@@ -1,16 +1,5 @@
 <?php
-/**
- * BasePHP's Date/Date_Time classes wrap around PHP's own DateTime implementation whose
- * API, IMO, is ghastly.
- *
- * Main differences:
- *   1. This implementation is immutable
- *   2. Accessor methods for component parts
- *   3. Distinction between date and date-and-time 
- *
- * @todo add/subtract intervals
- * @todo get interval between two dates
- */
+// zing-autoload-ignore
 class Date
 {
     //
