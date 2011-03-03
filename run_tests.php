@@ -1,9 +1,9 @@
 <?php
 set_time_limit(0);
 
-require 'src/datetime.php';
-require 'src/lfo.php';
-require 'src/lfo_object.php';
+require 'classes/datetime.php';
+require 'classes/lfo.php';
+require 'classes/lfo_object.php';
 
 //
 // Configurable bits of stuff
