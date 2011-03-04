@@ -297,6 +297,7 @@ class Date
     }
 }
 
+// zing-autoload-ignore
 class Date_Time extends Date
 {
 	public function to_date() { return new Date($this->native); }
