@@ -7,7 +7,7 @@ class ZingPlugin extends \zing\plugin\Plugin
         
         $source = <<<SOURCE
 function lfo_configure() {
-    \\lfo\\Gateway::configure(function(\$g) use (\$link) {
+    \\lfo\\Gateway::configure(function(\$g) {
         \$db = GDB::instance();
         \$g->mysql_link = \$db->get_mysql_link();
         \$g->table_name = 'lfo_object';
